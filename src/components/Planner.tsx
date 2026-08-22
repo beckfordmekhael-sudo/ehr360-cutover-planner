@@ -1,18 +1,20 @@
 import { useMemo, useState } from "react";
 import type { Practice, ScheduledTask, TaskStatus } from "../domain/types";
 import { PRESETS, SYSTEMS } from "../domain/systems";
-import { WORKSTREAMS } from "../domain/tasks";
+import { STREAMS } from "../domain/library";
+import { classify, QUESTIONS, TYPE_META } from "../domain/classify";
 import { deriveConflicts } from "../domain/conflicts";
 import type { PlanResult } from "../engine/schedule";
-import { deriveMilestones, fmt, fmtShort, isMonday, iso, tLabel, tWeekLabel } from "../engine/schedule";
+import { addDays, deriveMilestones, fmt, fmtShort, isMonday, iso, tLabel, tWeekLabel } from "../engine/schedule";
 import { buildSummary, downloadCsv } from "../exports";
 
 interface Props {
   practice: Practice;
   plan: PlanResult;
-  update: (patch: Partial<Practice>) => void;
+  update: (patch: Partial<Practice>, summary: string) => void;
 }
 
+const STATUS_CYCLE: TaskStatus[] = ["pending", "active", "done"];
 const STATUS_OPTIONS: { v: TaskStatus; label: string }[] = [
   { v: "pending", label: "—" },
   { v: "active", label: "Active" },
@@ -23,25 +25,28 @@ const STATUS_OPTIONS: { v: TaskStatus; label: string }[] = [
 
 export default function Planner({ practice, plan, update }: Props) {
   const [critOnly, setCritOnly] = useState(false);
+  const [openOnly, setOpenOnly] = useState(false);
   const [copied, setCopied] = useState(false);
 
+  const implType = classify(practice.classification);
+  const epcsStarted = ["EPX1", "EPX4", "EPX5", "EPX6", "EPX8"].some(
+    (id) => practice.progress[id]?.status === "done" || practice.progress[id]?.status === "active"
+  );
   const conflicts = useMemo(
-    () => deriveConflicts(practice.dispositions, practice.scale, plan.shortBy),
-    [practice.dispositions, practice.scale, plan.shortBy]
+    () => deriveConflicts(practice, plan.scopeCtx, plan.billingShortBy, epcsStarted),
+    [practice, plan.scopeCtx, plan.billingShortBy, epcsStarted]
   );
   const milestones = useMemo(() => deriveMilestones(plan), [plan]);
 
-  const counts = useMemo(() => {
-    const c = { move: 0, stay: 0, na: 0 };
-    Object.values(practice.dispositions).forEach((v) => c[v]++);
-    return c;
-  }, [practice.dispositions]);
-
-  const setStatus = (id: string, v: TaskStatus) => {
-    const next = { ...practice.taskStatus };
-    if (v === "pending") delete next[id];
-    else next[id] = v;
-    update({ taskStatus: next });
+  const setStatus = (t: ScheduledTask, v: TaskStatus) => {
+    const progress = { ...practice.progress };
+    if (v === "pending") delete progress[t.id];
+    else progress[t.id] = { status: v, completedOn: v === "done" ? iso(new Date()) : progress[t.id]?.completedOn };
+    update({ progress }, `${t.id} → ${v}`);
+  };
+  const cycleStatus = (t: ScheduledTask) => {
+    const i = STATUS_CYCLE.indexOf(t.status);
+    setStatus(t, STATUS_CYCLE[(i + 1) % STATUS_CYCLE.length] ?? "pending");
   };
 
   const copySummary = async () => {
@@ -50,49 +55,96 @@ export default function Planner({ practice, plan, update }: Props) {
     setTimeout(() => setCopied(false), 1800);
   };
 
-  /* ------ week grouping ------ */
   const weekOf = (off: number) => (off > 0 ? Math.ceil(off / 7) : off === 0 ? 0 : -Math.ceil(-off / 7));
   const groups = useMemo(() => {
     const map = new Map<number, ScheduledTask[]>();
     for (const t of plan.tasks) {
       if (critOnly && !t.critical) continue;
+      if (openOnly && (t.status === "done")) continue;
       const w = weekOf(t.endOffset);
-      const arr = map.get(w) ?? [];
-      arr.push(t);
-      map.set(w, arr);
+      (map.get(w) ?? map.set(w, []).get(w)!).push(t);
     }
     return [...map.entries()].sort((a, b) => b[0] - a[0]);
-  }, [plan.tasks, critOnly]);
+  }, [plan.tasks, critOnly, openOnly]);
 
+  const doneCount = plan.tasks.filter((t) => t.status === "done").length;
   const goLiveNotMonday = !isMonday(plan.goLive);
+  const gapDays = plan.billingRunway - plan.buildRunway;
 
   return (
     <div>
+      {/* ---- classification ---- */}
+      <section className="panel no-print">
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 0 }}>
+          <div style={{ flex: "1 1 460px", borderRight: "1px solid var(--rule-soft)" }}>
+            {QUESTIONS.map((q) => {
+              const v = practice.classification[q.key];
+              return (
+                <div key={q.key} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 16px", borderBottom: "1px solid var(--rule-soft)" }}>
+                  <span style={{ flex: 1, fontSize: 12.5 }}>{q.q}</span>
+                  <span style={{ fontSize: 10.5, color: "var(--ink3)", fontFamily: "var(--mono)", width: 150, textAlign: "right" }}>
+                    {v ? q.yes : q.no}
+                  </span>
+                  <div className="seg-group" style={{ width: 96 }} role="group" aria-label={q.q}>
+                    {[true, false].map((b) => (
+                      <button
+                        key={String(b)}
+                        className={`seg${v === b ? (b ? " on-move" : " on-stay") : ""}`}
+                        aria-pressed={v === b}
+                        onClick={() =>
+                          update(
+                            { classification: { ...practice.classification, [q.key]: b } },
+                            `Classification: ${q.key} = ${b ? "yes" : "no"}`
+                          )
+                        }
+                      >
+                        {b ? "Yes" : "No"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ flex: "1 1 300px", padding: "14px 18px", background: "var(--anchor-bg)" }}>
+            <div className="kicker">Implementation type · recorded at kickoff</div>
+            <div style={{ fontFamily: "var(--mono)", fontSize: 22, fontWeight: 700, color: "var(--anchor)", margin: "4px 0" }}>
+              {TYPE_META[implType].name}
+            </div>
+            <div style={{ fontSize: 12, color: "var(--ink2)", lineHeight: 1.5 }}>{TYPE_META[implType].situation}</div>
+            <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--ink2)", marginTop: 6 }}>{TYPE_META[implType].duration}</div>
+            {practice.classification.submitterChanges && (
+              <div style={{ fontSize: 11.5, marginTop: 8, color: "var(--move)", fontWeight: 600 }}>
+                Submitter changes → §11b EDI enrollment in scope IN FULL{implType === "B" ? " — even though payer contracts are untouched" : ""}.
+              </div>
+            )}
+          </div>
+        </div>
+      </section>
+
       {/* ---- scope inputs ---- */}
       <section className="panel no-print">
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 20, padding: "14px 16px", borderBottom: "1px solid var(--rule-soft)", alignItems: "flex-end" }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 18, padding: "14px 16px", borderBottom: "1px solid var(--rule-soft)", alignItems: "flex-end" }}>
           <label>
             <span className="field-label">Go-live date</span>
-            <input
-              type="date"
-              value={practice.goLive}
-              onChange={(e) => e.target.value && update({ goLive: e.target.value })}
-            />
+            <input type="date" value={practice.goLive}
+              onChange={(e) => e.target.value && update({ goLive: e.target.value }, `Go-live → ${e.target.value}`)} />
           </label>
-          <NumField label="Providers" v={practice.scale.providers} set={(n) => update({ scale: { ...practice.scale, providers: n } })} />
-          <NumField label="Locations" v={practice.scale.locations} set={(n) => update({ scale: { ...practice.scale, locations: n } })} />
-          <NumField label="Payers" v={practice.scale.payers} set={(n) => update({ scale: { ...practice.scale, payers: n } })} />
-          <NumField label="Staff" v={practice.scale.staff} set={(n) => update({ scale: { ...practice.scale, staff: n } })} />
+          <Num label="Providers" v={practice.scale.providers} set={(n) => update({ scale: { ...practice.scale, providers: n } }, `Providers → ${n}`)} />
+          <Num label="Prescribers" v={practice.scale.prescribers} min={0} set={(n) => update({ scale: { ...practice.scale, prescribers: n } }, `Prescribers → ${n}`)} />
+          <Num label="Locations" v={practice.scale.locations} set={(n) => update({ scale: { ...practice.scale, locations: n } }, `Locations → ${n}`)} />
+          <Num label="Payers" v={practice.scale.payers} set={(n) => update({ scale: { ...practice.scale, payers: n } }, `Payers → ${n}`)} />
+          <Num label="Staff" v={practice.scale.staff} set={(n) => update({ scale: { ...practice.scale, staff: n } }, `Staff → ${n}`)} />
           <div className="toolbar" style={{ marginLeft: "auto" }}>
-            <span className="kicker" style={{ marginRight: 2 }}>Deal shape</span>
+            <span className="kicker">Disposition preset</span>
             {Object.entries(PRESETS).map(([k, p]) => (
-              <button key={k} className="btn ghost small" title={p.blurb} onClick={() => update({ dispositions: { ...p.map } })}>
+              <button key={k} className="btn ghost small" title={p.blurb}
+                onClick={() => update({ dispositions: { ...p.map } }, `Preset: ${p.name}`)}>
                 {p.name}
               </button>
             ))}
           </div>
         </div>
-
         <div className="disp-grid">
           {SYSTEMS.map((s) => {
             const v = practice.dispositions[s.k];
@@ -104,12 +156,8 @@ export default function Planner({ practice, plan, update }: Props) {
                 </div>
                 <div className="seg-group" role="group" aria-label={`${s.label} disposition`}>
                   {(["move", "stay", "na"] as const).map((d) => (
-                    <button
-                      key={d}
-                      className={`seg${v === d ? ` on-${d}` : ""}`}
-                      aria-pressed={v === d}
-                      onClick={() => update({ dispositions: { ...practice.dispositions, [s.k]: d } })}
-                    >
+                    <button key={d} className={`seg${v === d ? ` on-${d}` : ""}`} aria-pressed={v === d}
+                      onClick={() => update({ dispositions: { ...practice.dispositions, [s.k]: d } }, `${s.label} → ${d}`)}>
                       {d === "move" ? "Moves" : d === "stay" ? "Stays" : "N/A"}
                     </button>
                   ))}
@@ -118,29 +166,27 @@ export default function Planner({ practice, plan, update }: Props) {
             );
           })}
         </div>
-
-        <div style={{ padding: "10px 16px", display: "flex", gap: 14, flexWrap: "wrap", fontFamily: "var(--mono)", fontSize: 11, color: "var(--ink2)" }}>
-          <span style={{ color: "var(--move)" }}>{counts.move} moving</span>
-          <span style={{ color: "var(--stay)" }}>{counts.stay} staying</span>
-          <span style={{ color: "var(--na)" }}>{counts.na} out of scope</span>
-          <span style={{ marginLeft: "auto", color: "var(--ink3)" }}>{plan.tasks.length} tasks in scope</span>
-        </div>
       </section>
 
-      {/* ---- verdict ---- */}
-      <section className={`panel verdict ${plan.feasible ? "good" : "bad"}`} aria-live="polite">
+      {/* ---- two-clock verdict ---- */}
+      <section className={`panel verdict ${plan.buildFeasible && plan.billingFeasible ? "good" : "bad"}`} aria-live="polite">
         <div className="verdict-stats">
-          <Stat label="Verdict" v={plan.feasible ? "ACHIEVABLE" : "NOT ACHIEVABLE"} danger={!plan.feasible}
-            sub={plan.feasible ? `${-plan.shortBy} days of slack` : `short by ${plan.shortBy} days`} />
-          <Stat label="Work starts" v={fmt(plan.kickoff)} sub={tLabel(plan.requiredRunway)} />
+          <Stat label="Build-ready · we control it"
+            v={plan.buildFeasible ? "ACHIEVABLE" : "NOT ACHIEVABLE"} danger={!plan.buildFeasible}
+            sub={plan.buildFeasible ? `${-plan.buildShortBy}d slack · earliest ${fmt(plan.earliestBuildReady)}` : `short ${plan.buildShortBy}d · earliest ${fmt(plan.earliestBuildReady)}`} />
+          <Stat label="Billing-ready · third parties"
+            v={plan.billingFeasible ? "ACHIEVABLE" : "NOT ACHIEVABLE"} danger={!plan.billingFeasible}
+            sub={plan.billingFeasible ? `${-plan.billingShortBy}d slack · earliest ${fmt(plan.earliestBillingReady)}` : `short ${plan.billingShortBy}d · earliest ${fmt(plan.earliestBillingReady)}`} />
           <Stat label="Go-live" v={fmt(plan.goLive)} strong sub="T-0 · Monday open" />
-          <Stat label="Earliest realistic go-live" v={fmt(plan.earliestGoLive)} sub="from today, Monday-snapped" danger={!plan.feasible} />
-          <Stat label="Critical path" v={`${plan.requiredRunway} days`} sub={`${plan.tasks.filter((t) => t.critical).length} gating tasks`} />
-          <Stat label="Stabilization through" v={fmt(new Date(plan.goLive.getTime() + plan.tailDays * 86400000))} sub={`T+${plan.tailDays}`} />
+          <Stat label="Earliest defensible go-live" v={fmt(plan.earliestGoLive)} sub="Monday on/after both clocks clear"
+            danger={!plan.buildFeasible || !plan.billingFeasible} />
+          <Stat label="Clock gap" v={`${Math.abs(gapDays)}d`}
+            sub={gapDays > 0 ? "billing trails build — the practice could see patients it cannot bill for" : "build is the longer clock"} />
+          <Stat label="Work starts" v={fmt(plan.kickoff)} sub={tLabel(Math.max(plan.buildRunway, plan.billingRunway))} />
         </div>
         {goLiveNotMonday && (
           <div style={{ marginTop: 10, fontSize: 12.5, color: "var(--flag)" }}>
-            The chosen go-live is not a Monday. The cutover pattern is fixed: final export Friday, import over the weekend, open Monday morning.
+            The chosen go-live is not a Monday. The cutover pattern is fixed: export Friday, import over the weekend, open Monday.
           </div>
         )}
       </section>
@@ -151,29 +197,24 @@ export default function Planner({ practice, plan, update }: Props) {
         <div className="panel">
           {conflicts.length === 0 ? (
             <div style={{ padding: "14px 16px", fontSize: 13, color: "var(--ink2)" }}>
-              No structural conflicts in this scope. Re-check after any disposition change.
+              No structural conflicts in this scope. Re-check after any change.
             </div>
-          ) : (
-            conflicts.map((c, i) => (
-              <div className="conflict-row" key={i}>
-                <span className={`conflict-n ${c.severity}`}>{String(i + 1).padStart(2, "0")}</span>
-                <span className="conflict-text">{c.text}</span>
-              </div>
-            ))
-          )}
+          ) : conflicts.map((c, i) => (
+            <div className="conflict-row" key={i}>
+              <span className={`conflict-n ${c.severity}`}>{String(i + 1).padStart(2, "0")}</span>
+              <span className="conflict-text">{c.text}</span>
+            </div>
+          ))}
         </div>
       </section>
 
       <div className="two-col" style={{ marginTop: 20 }}>
-        {/* ---- workstream spans ---- */}
         <section>
           <h2 className="section-h">Workstreams against the date</h2>
           <div className="panel" style={{ padding: "16px 16px 10px" }}>
             <SpanChart plan={plan} />
           </div>
         </section>
-
-        {/* ---- milestones ---- */}
         <section>
           <h2 className="section-h">Milestones</h2>
           <div className="panel">
@@ -192,8 +233,16 @@ export default function Planner({ practice, plan, update }: Props) {
       {/* ---- schedule ---- */}
       <section style={{ marginTop: 20 }}>
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
-          <h2 className="section-h" style={{ margin: 0 }}>Work-back schedule</h2>
+          <h2 className="section-h" style={{ margin: 0 }}>
+            Work-back schedule
+            <span style={{ color: "var(--ink3)", fontWeight: 400, marginLeft: 10, letterSpacing: 0 }}>
+              {doneCount}/{plan.tasks.length} done
+            </span>
+          </h2>
           <div className="toolbar no-print">
+            <button className="btn ghost small" aria-pressed={openOnly} onClick={() => setOpenOnly((v) => !v)}>
+              {openOnly ? "Showing open only" : "Hide done"}
+            </button>
             <button className="btn ghost small" aria-pressed={critOnly} onClick={() => setCritOnly((v) => !v)}>
               {critOnly ? "Showing critical path" : "Critical path only"}
             </button>
@@ -207,6 +256,7 @@ export default function Planner({ practice, plan, update }: Props) {
           <table className="tbl">
             <thead>
               <tr>
+                <th className="no-print" aria-label="quick toggle"></th>
                 <th>ID</th>
                 <th>Task</th>
                 <th>Owner</th>
@@ -218,34 +268,15 @@ export default function Planner({ practice, plan, update }: Props) {
             </thead>
             <tbody>
               {groups.map(([week, rows]) => (
-                <WeekGroup key={week} week={week} rows={rows} setStatus={setStatus} />
+                <WeekGroup key={week} week={week} rows={rows} setStatus={setStatus} cycle={cycleStatus} />
               ))}
             </tbody>
           </table>
         </div>
-        <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--ink3)", marginTop: 8 }}>
-          ▲ = critical path, computed from the dependency graph. ● = deadline pulled earlier than its playbook target by a
-          downstream chain. Durations are calendar days, scale with practice size, and are <span style={{ color: "var(--amber)" }}>estimates until observed data replaces them</span> (Settings).
-        </div>
-      </section>
-
-      {/* ---- open questions ---- */}
-      <section style={{ marginTop: 20 }}>
-        <h2 className="section-h">Open questions this plan does not paper over</h2>
-        <div className="panel" style={{ fontSize: 12.5 }}>
-          {[
-            ["Timeline", "The playbook says 8 weeks standard (10–12 complex); a separate internal workflow says 3–5 weeks. The 3–5 figure appears to describe the build phase only — EDI enrollment alone runs 30–45+ days per payer. Confirm which number is external before it reaches a client. This tool schedules from the playbook."],
-            ["Go-live authority", "The readiness gate exists; the deciding authority is not named. Every go/no-go call needs a named decision-maker."],
-            ["Practice keeps its own billing", "Removes or reshapes the entire billing workstream. Flagged in scope warnings when claims move but the billing team stays."],
-            ["Discrete vs PDF notes, by source EMR", "Determines whether staff still re-key patient history after go-live. Must be known before it is promised — surfaced on the migration-scope task."],
-            ["Open A/R at cutover", "Who works it, in which system, for how long. No standard answer exists; the plan forces a written agreement at T-2 and tracks runout to T+13 weeks."],
-            ["Legacy read-only access", "Duration, cost, who pays. Should be a contract standard, not negotiated per deal."],
-          ].map(([h, body], i) => (
-            <div key={i} style={{ padding: "9px 16px", borderBottom: i < 5 ? "1px solid var(--rule-soft)" : "none", display: "flex", gap: 12 }}>
-              <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--amber)", flexShrink: 0, width: 18 }}>Q{i + 1}</span>
-              <span><strong style={{ fontWeight: 650 }}>{h}.</strong> {body}</span>
-            </div>
-          ))}
+        <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--ink-soft)", marginTop: 8 }}>
+          ★ = hard gate (v5). ▲ = critical path, computed from binding dependency edges. ● = deadline pulled earlier than its
+          playbook target by a downstream chain. EXT = third-party clock. Durations are calendar days and{" "}
+          <span style={{ color: "var(--amber)" }}>estimates until observed data replaces them</span> (Assumptions).
         </div>
       </section>
     </div>
@@ -254,62 +285,67 @@ export default function Planner({ practice, plan, update }: Props) {
 
 /* ------------------------------ pieces ------------------------------ */
 
-function WeekGroup({ week, rows, setStatus }: {
+function WeekGroup({ week, rows, setStatus, cycle }: {
   week: number;
   rows: ScheduledTask[];
-  setStatus: (id: string, v: TaskStatus) => void;
+  setStatus: (t: ScheduledTask, v: TaskStatus) => void;
+  cycle: (t: ScheduledTask) => void;
 }) {
   return (
     <>
       <tr className="week-head">
-        <td colSpan={7}>
+        <td colSpan={8}>
           {tWeekLabel(week)}
-          <span style={{ fontWeight: 400, color: "var(--ink3)", marginLeft: 10 }}>
+          <span style={{ fontWeight: 400, color: "var(--ink-soft)", marginLeft: 10 }}>
             due {fmtShort(rows[0].endDate)}{rows.length > 1 ? ` – ${fmtShort(rows[rows.length - 1].endDate)}` : ""}
           </span>
         </td>
       </tr>
       {rows.map((t) => {
-        const ws = WORKSTREAMS.find((w) => w.k === t.workstream)!;
+        const ws = STREAMS.find((w) => w.k === t.stream);
         return (
           <tr key={t.id} className={`row-${t.status}`}>
-            <td className="task-id" title={ws.label}>
-              <span style={{ display: "inline-block", width: 7, height: 7, background: ws.color, marginRight: 6 }} />
+            <td className="no-print" style={{ width: 30 }}>
+              <button
+                className={`quick-done${t.status === "done" ? " is-done" : t.status === "active" ? " is-active" : ""}`}
+                title={`${t.id}: click to cycle — pending → active → done`}
+                aria-label={`Cycle status for ${t.id}, currently ${t.status}`}
+                onClick={() => cycle(t)}
+              >
+                {t.status === "done" ? "✓" : t.status === "active" ? "◐" : ""}
+              </button>
+            </td>
+            <td className="task-id" title={ws?.label}>
+              <span style={{ display: "inline-block", width: 7, height: 7, background: ws?.color, marginRight: 6 }} />
               {t.id}
+              {t.gate && <span style={{ color: "var(--amber)" }} title="Hard gate"> ★</span>}
               {t.critical && <span className="crit-mark" title="Critical path"> ▲</span>}
-              {t.pulledByDeps && <span className="pulled" title="Deadline pulled earlier than its playbook target by dependencies"> ●</span>}
+              {t.pulledByDeps && <span className="pulled" title="Pulled earlier than its playbook target by dependencies"> ●</span>}
+              {t.clockResolved === "external" && <div style={{ fontSize: 8.5, color: "var(--post)", letterSpacing: ".08em" }}>EXT</div>}
             </td>
             <td>
               <div className="task-title">{t.title}</div>
-              {t.note && (
-                <div className="task-note">
-                  {t.note.startsWith("OPEN QUESTION") ? (<><span className="oq">Open question.</span> {t.note.slice(t.note.indexOf(":") + 1).trim()}</>) : t.note}
-                </div>
-              )}
+              {t.note && <div className="task-note">{t.note}</div>}
             </td>
-            <td style={{ fontSize: 12, color: t.owner === "Customer" ? "var(--move)" : "var(--ink2)", whiteSpace: "nowrap", fontWeight: t.owner === "Customer" ? 600 : 400 }}>
+            <td style={{ fontSize: 12, color: t.owner === "Cust" ? "var(--move)" : "var(--ink2)", whiteSpace: "nowrap", fontWeight: t.owner === "Cust" ? 600 : 400 }}>
               {t.owner}
             </td>
             <td className="num">
               {fmtShort(t.startDate)}
-              <div style={{ fontSize: 9.5, color: "var(--ink3)" }}>{tLabel(t.startOffset)}</div>
+              <div style={{ fontSize: 9.5, color: "var(--ink-soft)" }}>{tLabel(t.startOffset)}</div>
             </td>
             <td className="num" style={t.critical ? { color: "var(--flag)", fontWeight: 700 } : undefined}>
               {fmtShort(t.endDate)}
-              <div style={{ fontSize: 9.5, color: "var(--ink3)", fontWeight: 400 }}>{tLabel(t.endOffset)}</div>
+              <div style={{ fontSize: 9.5, color: "var(--ink-soft)", fontWeight: 400 }}>{tLabel(t.endOffset)}</div>
             </td>
             <td className="num">{t.durationDays}</td>
             <td className="no-print">
-              <select
-                className={`status-select st-${t.status}`}
-                value={t.status}
+              <select className={`status-select st-${t.status}`} value={t.status}
                 aria-label={`Status for ${t.id}`}
-                onChange={(e) => setStatus(t.id, e.target.value as TaskStatus)}
-              >
-                {STATUS_OPTIONS.map((o) => (
-                  <option key={o.v} value={o.v}>{o.label}</option>
-                ))}
+                onChange={(e) => setStatus(t, e.target.value as TaskStatus)}>
+                {STATUS_OPTIONS.map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
               </select>
+              {t.completedOn && <div style={{ fontSize: 9, color: "var(--ok)", fontFamily: "var(--mono)", marginTop: 2 }}>{t.completedOn}</div>}
             </td>
           </tr>
         );
@@ -319,19 +355,21 @@ function WeekGroup({ week, rows, setStatus }: {
 }
 
 function SpanChart({ plan }: { plan: PlanResult }) {
-  const lead = plan.requiredRunway || 1;
+  const lead = Math.max(plan.buildRunway, plan.billingRunway) || 1;
   const tail = plan.tailDays;
   const span = lead + tail || 1;
   const pos = (off: number) => ((lead - off) / span) * 100;
 
-  const groups = WORKSTREAMS.map((w) => {
-    const rows = plan.tasks.filter((t) => t.workstream === w.k);
+  const groups = STREAMS.map((w) => {
+    const rows = plan.tasks.filter((t) => t.stream === w.k);
     if (!rows.length) return null;
     return {
       ...w,
       start: Math.max(...rows.map((r) => r.startOffset)),
       end: Math.min(...rows.map((r) => r.endOffset)),
       crit: rows.some((r) => r.critical),
+      done: rows.filter((r) => r.status === "done").length,
+      total: rows.length,
     };
   }).filter((g): g is NonNullable<typeof g> => g !== null);
 
@@ -346,8 +384,8 @@ function SpanChart({ plan }: { plan: PlanResult }) {
           return (
             <div className="span-row" key={g.k}>
               <div className="span-head">
-                <span>{g.label}</span>
-                <span style={{ color: "var(--ink3)" }}>{tLabel(g.start)} → {tLabel(g.end)}</span>
+                <span>{g.label} <span style={{ color: "var(--ink-soft)" }}>{g.done}/{g.total}</span></span>
+                <span style={{ color: "var(--ink-soft)" }}>{tLabel(g.start)} → {tLabel(g.end)}</span>
               </div>
               <div className="span-track">
                 <div className={`span-bar${g.crit ? " crit" : ""}`} style={{ left: `${l}%`, width: `${w}%`, background: g.color }} />
@@ -356,13 +394,10 @@ function SpanChart({ plan }: { plan: PlanResult }) {
           );
         })}
       </div>
-      <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "var(--mono)", fontSize: 9.5, color: "var(--ink3)", borderTop: "1px solid var(--rule-soft)", paddingTop: 5, marginTop: 4 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "var(--mono)", fontSize: 9.5, color: "var(--ink-soft)", borderTop: "1px solid var(--rule-soft)", paddingTop: 5, marginTop: 4 }}>
         <span>{fmtShort(plan.kickoff)}</span>
         <span>{iso(plan.goLive)}</span>
-        <span>{fmtShort(new Date(plan.goLive.getTime() + tail * 86400000))}</span>
-      </div>
-      <div style={{ fontFamily: "var(--mono)", fontSize: 9.5, color: "var(--ink3)", marginTop: 6 }}>
-        red top edge = workstream contains a critical-path task
+        <span>{fmtShort(addDays(plan.goLive, tail))}</span>
       </div>
     </div>
   );
@@ -370,7 +405,7 @@ function SpanChart({ plan }: { plan: PlanResult }) {
 
 function Stat({ label, v, sub, strong, danger }: { label: string; v: string; sub?: string; strong?: boolean; danger?: boolean }) {
   return (
-    <div>
+    <div style={{ maxWidth: 250 }}>
       <div className="stat-label">{label}</div>
       <div className={`stat-v${strong ? " strong" : ""}${danger ? " danger" : ""}`}>{v}</div>
       {sub && <div className={`stat-sub${danger ? " danger" : ""}`}>{sub}</div>}
@@ -378,17 +413,12 @@ function Stat({ label, v, sub, strong, danger }: { label: string; v: string; sub
   );
 }
 
-function NumField({ label, v, set }: { label: string; v: number; set: (n: number) => void }) {
+function Num({ label, v, set, min = 1 }: { label: string; v: number; set: (n: number) => void; min?: number }) {
   return (
     <label>
       <span className="field-label">{label}</span>
-      <input
-        type="number"
-        min={1}
-        value={v}
-        style={{ width: 68 }}
-        onChange={(e) => set(Math.max(1, parseInt(e.target.value || "1", 10)))}
-      />
+      <input type="number" min={min} value={v} style={{ width: 64 }}
+        onChange={(e) => set(Math.max(min, parseInt(e.target.value || String(min), 10)))} />
     </label>
   );
 }

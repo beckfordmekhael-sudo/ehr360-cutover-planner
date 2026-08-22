@@ -1,57 +1,61 @@
 # EHR 360 Cutover Planner — context for Claude Code
 
-Work-back planning tool for EHR 360 implementations. An implementation lead
-enters a go-live date + which of 15 practice systems move/stay, and gets a
-feasibility verdict, dependency-driven schedule, scope-conflict warnings,
-payer enrollment tracker, and client-facing exports.
+Planning + tracking tool for EHR 360 implementations. v2, built from
+**Implementation Playbook v5** ("claude-code-brief-cutover-planner-v2.md" in
+Downloads is the build brief; where documents conflict, v5 wins).
 
 ## Ground rules
 
-- **Every duration is an estimate.** No full EHR migration has completed
-  (Neuro Heart is the first). Durations are config in
-  `src/domain/durations.ts` + the in-app Assumptions tab — never hard-code a
-  duration into a task that should scale or be editable.
-- **The playbook is the spine.** The task library (`src/domain/tasks.ts`)
-  encodes "EHR360 Implementation Playbook.docx" §3–12 with `ref` fields.
-  Don't invent tasks or dependencies; where a relationship is unclear the
-  task stays unchained, anchored to its T-week target.
-- **Six open questions are surfaced on purpose** (go-live authority, 8-week
-  vs 3–5-week timeline conflict, practice-kept billing, discrete-vs-PDF
-  notes, open A/R ownership, legacy read-only terms). They appear in the UI
-  where they affect output. Do not resolve or hide them silently.
-- Design: dense ops instrument, monospace for dates/IDs/tabular data, color
-  carries meaning only, prints legibly, works on a phone. No gradients, no
-  stat-card SaaS styling.
+- **Every duration is an estimate.** No full migration has completed; Neuro
+  Heart finishes hypercare late September and its planned-vs-actual replaces
+  the estimates. Durations are data (`src/domain/durations.ts` + server
+  globals), **pinned per practice** — never make a stored plan move silently.
+- **The task library is DATA, not code**: `src/data/tasks.json`, with
+  declarative scope conditions interpreted by `src/domain/conditions.ts`.
+  A non-engineer edits the JSON. Don't move tasks into code. Don't invent
+  dependencies — unclear relationships stay unchained.
+- **§11 is two workstreams.** §11a payer contracts (verify-only on Type B)
+  vs §11b EDI submitter enrollment (in full on A/B/C — the submitter almost
+  always changes because EHR 360 uses its own clearinghouse). The Neuro
+  Heart test in `tests/engine.test.ts` enforces this; if it fails, the model
+  is wrong, not the test.
+- **Two clocks.** Build-ready is computed on the build-only subgraph;
+  billing-ready over everything feeding an external gate. Never collapse
+  them into one date.
+- **ERA cutover order is a recorded decision** with the billing lead named —
+  never hard-code 835-before-837 or the reverse.
+- Open decisions (v5 Appendix C) are surfaced in the UI where they affect
+  output. Do not resolve or hide them silently.
+- Design: dense ops instrument; monospace for dates/IDs/tabular data; color
+  = meaning only; prints legibly; phone-usable. No SaaS-dashboard styling.
 
 ## Layout
 
-- `src/domain/` — task library, Appendix A deliverables, Appendix B
-  readiness gate, conflict rules, onboarding-form pre-fill map, duration
-  model, systems/presets
-- `src/engine/schedule.ts` — pure work-back scheduler: backward pass over
-  dep graph + T-week anchors, critical path, feasibility, Monday-snapped
-  earliest go-live. All in "days before go-live" offset space.
-- `src/store.ts` — localStorage persistence (practices + assumptions)
-- `src/components/` — Planner, PayerTracker, ClientViews (deliverables +
-  gate), Prefill, Settings; shell in `src/App.tsx`
+- `src/data/*.json` — task library, Appendix A, Appendix B, Neuro Heart payer seed
+- `src/domain/` — types, condition interpreter, classifier (4 questions →
+  Type A–D), durations, conflicts, prefill, library accessor (+ validation)
+- `src/engine/schedule.ts` — two-clock backward pass, binding-edge critical
+  path, feasibility, coverage (835 receiver-confirmed), phase
+- `server/index.mjs` — Express + node:sqlite (Node ≥22): simple accounts,
+  sessions, practices, **audit trail** (who/when on every write), optimistic
+  concurrency (409 → client reloads). DB in `server/data/` (gitignored).
+- `src/store.ts` — server-backed hooks. NOTE: optimistic updates compute
+  from a synchronously-maintained ref, never inside a setState updater
+  (React defers those — this was a real lost-write bug).
+- `src/components/` — Planner (classification + verdict + schedule),
+  PayerTracker (3-column tracker, variant collapsing, CSV import, ERA
+  decision card), ClientViews (Appendix A print view + evidenced gate),
+  Settings (global vs pinned assumptions), History (audit), Login, Prefill
 
-Dev: `npm run dev` (port 5199). Check: `npx tsc --noEmit` and `npm run build`.
+Dev: `npm run dev` (API :5177 + Vite :5199; launch.json name
+`cutover-planner`). Check: `npx tsc --noEmit` · `npm test` · `npm run build`.
 
-## Known debts (from review, in priority order)
+## Known remaining debts
 
-1. No tests — engine is pure; add Vitest goldens for the three preset
-   runways (full switch = 82d, new billing entity = 160d at default scale)
-   and scope-predicate counts.
-2. Task completion records no date → planned-vs-actual loop can't close.
-3. No JSON export/import of practice state; no error boundary; no schema
-   migration for stored practices.
-4. `--ink3` small text fails WCAG AA contrast; darken.
-5. Raw ms date math in two Planner spots (DST-unsafe) — use `addDays`.
-6. `uid()` can collide across sessions — use `crypto.randomUUID()`.
-7. Deliverable #38 uses `dueWeek: 0.43` hack — give Deliverable a `dueDays`
-   field like TaskDef has.
-
-Source documents (this machine): `C:\Users\lordb\Downloads` — "EHR360
-Implementation Playbook.docx", "EHR360_Implementation_Lifecycle_v2_INTERNAL.docx",
-"Practice_Onboarding_Form_v1.0.1.pdf", plus the original build brief
-"cowork-brief-migration-planner.md" and v1 artifact "migration-planner.jsx".
+1. Print/PDF pagination never visually verified (page breaks, thead repeat).
+2. No JSON export/import of a practice; no React error boundary; no schema
+   migration for stored practice records.
+3. Session tokens live forever (no expiry sweep); registration is open.
+4. Deliverables/gate JSON share condition language but only tasks.json is
+   validated by `validateLibrary()` — extend it.
+5. `phaseOf` long-lead cross-check is coarse (ratio of external tasks done).

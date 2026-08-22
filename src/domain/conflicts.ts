@@ -1,10 +1,9 @@
-import type { DispositionMap, Scale, SystemKey } from "./types";
+import type { Practice, ScopeCtx, SystemKey } from "./types";
 import { SYSTEM_LABEL } from "./systems";
 
 /*
- * Scope conflict warnings, derived from the disposition combination.
- * These are the "invisible manual work" cases — mixed scope where somebody
- * re-keys data between two systems every day and nobody notices until go-live.
+ * Scope conflict warnings — derived from the disposition combination, the
+ * implementation type and the classification, not from a static list.
  */
 
 export interface Conflict {
@@ -12,11 +11,16 @@ export interface Conflict {
   text: string;
 }
 
-const mv = (m: DispositionMap, k: SystemKey) => m[k] === "move";
-const st = (m: DispositionMap, k: SystemKey) => m[k] === "stay";
-
-export function deriveConflicts(m: DispositionMap, scale: Scale, shortByDays: number): Conflict[] {
+export function deriveConflicts(
+  practice: Practice,
+  ctx: ScopeCtx,
+  billingShortBy: number,
+  epcsChainStarted: boolean
+): Conflict[] {
+  const m = practice.dispositions;
   const out: Conflict[] = [];
+  const mv = (k: SystemKey) => m[k] === "move";
+  const st = (k: SystemKey) => m[k] === "stay";
   const anyMove = Object.values(m).includes("move");
   const anyStay = Object.values(m).includes("stay");
 
@@ -25,46 +29,51 @@ export function deriveConflicts(m: DispositionMap, scale: Scale, shortByDays: nu
     return out;
   }
 
-  if (mv(m, "claims") && !mv(m, "remit"))
-    out.push({ severity: "red", text: "Claims move but remittance stays. Payments keep landing in the old system and posting stays manual — every day." });
-  if (mv(m, "remit") && !mv(m, "claims"))
-    out.push({ severity: "red", text: "Remits move but claims stay. Confirm each payer will deliver 835s to a different destination than the one receiving the 837." });
-  if (mv(m, "clinical") && st(m, "sched"))
-    out.push({ severity: "red", text: "Charting moves while scheduling stays. Someone re-keys every appointment into the chart, daily." });
-  if (mv(m, "sched") && st(m, "clinical"))
-    out.push({ severity: "red", text: "Scheduling moves while charting stays. Check-in and documentation split across two screens." });
-  if (mv(m, "clinical") && !mv(m, "hist"))
-    out.push({ severity: "amber", text: "New charting without historical data. Providers will keep the legacy system open to read history — plan read-only access and say so up front." });
-  if (mv(m, "claims") && !mv(m, "clinical") && !st(m, "clinical"))
-    out.push({ severity: "amber", text: "Claims move but no clinical source is marked. Where does the charge originate?" });
-  if (mv(m, "erx") && !mv(m, "clinical"))
-    out.push({ severity: "amber", text: "e-Prescribing moves without the chart. Prescribers work from a med list that lives elsewhere — confirm the workflow." });
-  if (mv(m, "elig") && !mv(m, "sched"))
-    out.push({ severity: "amber", text: "Eligibility moves but scheduling stays. Who runs the eligibility check, in which system, at what point before the visit?" });
-  if (mv(m, "cred"))
-    out.push({
-      severity: shortByDays > 0 ? "red" : "amber",
-      text: shortByDays > 0
-        ? "Credentialing is in scope and the date is compressed. Credentialing cannot be compressed — the date moves first."
-        : "Credentialing is in scope. It is the longest third-party gate in the plan; it sets the date, not the reverse.",
-    });
-  if (mv(m, "claims") && st(m, "rcm"))
-    out.push({ severity: "amber", text: "The practice keeps its own billing team / RCM vendor. OPEN QUESTION: the process reshape for practice-kept billing is not standardised — the outside biller needs a BAA, a written scope of work, and named users before training." });
-  if (mv(m, "pay") && st(m, "claims") && st(m, "remit"))
-    out.push({ severity: "amber", text: "Card processing moves while billing stays. Patient payments post in one system, claims in another — reconciliation is manual until proven otherwise." });
+  // §11b mis-scoping — the most consequential error available (v5 §11).
+  if (ctx.implType === "B" && !ctx.classification.submitterChanges && (mv("claims") || mv("remit")))
+    out.push({ severity: "red", text: "Type B with 'submitter does not change' recorded — EHR 360 submits through its own clearinghouse, so the submitter almost always changes. Verify question 4 before trusting this plan: reading §11 as verify-only on a Type B under-scopes by roughly five weeks." });
 
-  // Generic move/stay bridge — list the actual pairs so the owner conversation is concrete.
-  if (anyMove && anyStay) {
-    const moving = (Object.keys(m) as SystemKey[]).filter((k) => m[k] === "move").map((k) => SYSTEM_LABEL[k]);
+  if (mv("claims") && !mv("remit"))
+    out.push({ severity: "red", text: "Claims move but remittance stays. Payments keep landing in the old system and posting stays manual — every day." });
+  if (mv("remit") && !mv("claims"))
+    out.push({ severity: "red", text: "Remits move but claims stay. Confirm each payer will deliver 835s to a different destination than the one receiving the 837." });
+  if (mv("clinical") && st("sched"))
+    out.push({ severity: "red", text: "Charting moves while scheduling stays. Someone re-keys every appointment into the chart, daily." });
+  if (mv("sched") && st("clinical"))
+    out.push({ severity: "red", text: "Scheduling moves while charting stays. Check-in and documentation split across two screens." });
+  if (mv("clinical") && !mv("hist"))
+    out.push({ severity: "amber", text: "New charting without historical data. Providers keep the legacy system open to read history — plan read-only access and say so up front." });
+  if (mv("claims") && !mv("clinical") && !st("clinical"))
+    out.push({ severity: "amber", text: "Claims move but no clinical source is marked. Where does the charge originate?" });
+
+  // EPCS against the external clock.
+  if (practice.scale.prescribers > 0 && mv("erx") && !epcsChainStarted)
+    out.push({ severity: "red", text: `${practice.scale.prescribers} prescriber(s) present and EPCS identity proofing not started. Proofing is on the EXTERNAL clock — ~30 days per prescriber, hardware tokens ship physically, cannot compress at the end. Start it now regardless of the go-live date.` });
+  if (practice.scale.prescribers > 0 && m.erx === "na")
+    out.push({ severity: "amber", text: "Prescribers are present but e-prescribing is marked not applicable. Confirm this is deliberate — a provider who cannot prescribe on day one cannot see patients." });
+
+  if ((ctx.implType === "C" || mv("cred")) && billingShortBy > 0)
+    out.push({ severity: "red", text: "Credentialing is in scope and the requested date is compressed. Credentialing cannot compress — the date moves first." });
+  else if (ctx.implType === "C" || mv("cred"))
+    out.push({ severity: "amber", text: "Credentialing (new entity) in scope: 90–180 days, third-party gated. It sets the billing-ready date; the go-live date follows it." });
+
+  if (mv("claims") && st("rcm"))
+    out.push({ severity: "amber", text: "The practice keeps its own billing team / RCM vendor. The outside biller needs a signed BAA, a written scope of work, and named users before training is scheduled." });
+
+  if (anyStay && anyMove) {
     const staying = (Object.keys(m) as SystemKey[]).filter((k) => m[k] === "stay").map((k) => SYSTEM_LABEL[k]);
     out.push({
       severity: "amber",
-      text: `Mixed scope: ${moving.length} moving, ${staying.length} staying. Every move/stay pair is a manual bridge that needs a named owner and a written spec. Staying: ${staying.join(", ")}.`,
+      text: `Mixed scope. Every move/stay pair is a manual bridge that needs a named owner and a written spec. Staying: ${staying.join(", ")}.`,
     });
   }
 
-  if ((mv(m, "claims") || mv(m, "remit")) && scale.payers > 30)
-    out.push({ severity: "amber", text: `${scale.payers} payers × three enrollment types ≈ ${scale.payers * 3} individual enrollments to track. Sequence by share of collections, not alphabetically.` });
+  if ((mv("claims") || mv("remit")) && practice.scale.payers > 30)
+    out.push({ severity: "amber", text: `${practice.scale.payers} payers × three enrollment types ≈ ${practice.scale.payers * 3} individual enrollments. Sequence by share of collections; confirm delegated clearinghouse coverage (open decision 1b) before assuming per-payer forms.` });
+
+  // ERA sequencing decision unrecorded.
+  if (mv("remit") && !practice.eraDecision.order)
+    out.push({ severity: "amber", text: "The 835 receiver cutover order is undecided. Both orders carry real risk (see the ERA sequencing card); the decision needs the billing lead's name against it." });
 
   return out;
 }

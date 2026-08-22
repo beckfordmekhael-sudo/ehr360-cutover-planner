@@ -1,0 +1,317 @@
+{
+  "source": "neuro_heart_payer_mix.csv \u2014 pre-migration baseline, share of collections",
+  "payers": [
+    {
+      "name": "Humana",
+      "payerId": "61101",
+      "variants": 4,
+      "share": 23.94
+    },
+    {
+      "name": "Medicare TN",
+      "payerId": "10312",
+      "variants": 2,
+      "share": 22.8
+    },
+    {
+      "name": "Blue Cross/Shield TN",
+      "payerId": "00390",
+      "variants": 1,
+      "share": 18.9
+    },
+    {
+      "name": "Unitedhealthcare",
+      "payerId": "87726",
+      "variants": 6,
+      "share": 15.98
+    },
+    {
+      "name": "Veterans Community Care Network (VACCN)",
+      "payerId": "VACCN",
+      "variants": 2,
+      "share": 3.91
+    },
+    {
+      "name": "Wellpoint",
+      "payerId": "WLPNT",
+      "variants": 2,
+      "share": 3.69
+    },
+    {
+      "name": "Cigna",
+      "payerId": "62308",
+      "variants": 2,
+      "share": 2.93
+    },
+    {
+      "name": "Ambetter",
+      "payerId": "68069",
+      "variants": 4,
+      "share": 2.2
+    },
+    {
+      "name": "Aetna",
+      "payerId": "60054",
+      "variants": 3,
+      "share": 0.97
+    },
+    {
+      "name": "Optum Health",
+      "payerId": "EPRNT826",
+      "variants": 1,
+      "share": 0.83
+    },
+    {
+      "name": "Medicaid TN",
+      "payerId": "TNCD",
+      "variants": 2,
+      "share": 0.61
+    },
+    {
+      "name": "United Medical Resources",
+      "payerId": "39026",
+      "variants": 3,
+      "share": 0.61
+    },
+    {
+      "name": "WEB-TPA",
+      "payerId": "75261",
+      "variants": 1,
+      "share": 0.54
+    },
+    {
+      "name": "Cigna Healthspring",
+      "payerId": "HSTN",
+      "variants": 1,
+      "share": 0.34
+    },
+    {
+      "name": "Tricare East PGBA (DOS Beg 01-01-2025)",
+      "payerId": "TRESTP",
+      "variants": 1,
+      "share": 0.28
+    },
+    {
+      "name": "United Healthcare of the River Valley",
+      "payerId": "95378",
+      "variants": 2,
+      "share": 0.27
+    },
+    {
+      "name": "United Healthcare",
+      "payerId": "UHC",
+      "variants": 1,
+      "share": 0.18
+    },
+    {
+      "name": "US Dept of Labor",
+      "payerId": "USDOL",
+      "variants": 1,
+      "share": 0.18
+    },
+    {
+      "name": "Wellcare",
+      "payerId": "14163",
+      "variants": 2,
+      "share": 0.13
+    },
+    {
+      "name": "Tricare West",
+      "payerId": "99726",
+      "variants": 1,
+      "share": 0.1
+    },
+    {
+      "name": "SELF PAY",
+      "payerId": "EPRNT1212",
+      "variants": 1,
+      "share": 0.09
+    },
+    {
+      "name": "Unitedhealthcare Student Resources",
+      "payerId": "74227",
+      "variants": 1,
+      "share": 0.09
+    },
+    {
+      "name": "Medicare RR",
+      "payerId": "00320",
+      "variants": 1,
+      "share": 0.06
+    },
+    {
+      "name": "Cigna Healthspring MD PA",
+      "payerId": "52192",
+      "variants": 1,
+      "share": 0.05
+    },
+    {
+      "name": "Lifeprint",
+      "payerId": "LIFE1",
+      "variants": 1,
+      "share": 0.04
+    },
+    {
+      "name": "GEHA",
+      "payerId": "44054",
+      "variants": 2,
+      "share": 0.04
+    },
+    {
+      "name": "Champus VA",
+      "payerId": "84146",
+      "variants": 3,
+      "share": 0.03
+    },
+    {
+      "name": "Humana Gold Choice PGBA Claims",
+      "payerId": "EPRNT142",
+      "variants": 1,
+      "share": 0.03
+    },
+    {
+      "name": "Devoted Health",
+      "payerId": "DEVOT",
+      "variants": 1,
+      "share": 0.02
+    },
+    {
+      "name": "Allegiance Benefit Plan Management",
+      "payerId": "81040",
+      "variants": 1,
+      "share": 0.02
+    },
+    {
+      "name": "PACIFICSOURCE HEALTH PLANS",
+      "payerId": "93029",
+      "variants": 1,
+      "share": 0.02
+    },
+    {
+      "name": "Medicare TN",
+      "payerId": "TNMC",
+      "variants": 1,
+      "share": 0.02
+    },
+    {
+      "name": "US Dept. of Labor",
+      "payerId": "GPRNT148",
+      "variants": 1,
+      "share": 0.02
+    },
+    {
+      "name": "NYSIF",
+      "payerId": "NYSIF",
+      "variants": 1,
+      "share": 0.01
+    },
+    {
+      "name": "UMWA Health & Retirement Funds",
+      "payerId": "52180",
+      "variants": 1,
+      "share": 0.01
+    },
+    {
+      "name": "UMR",
+      "payerId": "EPRNT492",
+      "variants": 1,
+      "share": 0.01
+    },
+    {
+      "name": "Medicare Railroad",
+      "payerId": "RRMC",
+      "variants": 1,
+      "share": 0.01
+    },
+    {
+      "name": "United Healthcare Medicare",
+      "payerId": "EPRNT1615",
+      "variants": 1,
+      "share": 0.01
+    },
+    {
+      "name": "AARP Medicare Supplement/Fixed Indemnity by UHC",
+      "payerId": "36273",
+      "variants": 1,
+      "share": 0.01
+    },
+    {
+      "name": "Allied Benefit Systems Inc",
+      "payerId": "37308",
+      "variants": 1,
+      "share": 0.01
+    },
+    {
+      "name": "Blue Cross and Blue Shield of Tennessee",
+      "payerId": "00890",
+      "variants": 1,
+      "share": 0.01
+    },
+    {
+      "name": "Sentara Health / Optima Health",
+      "payerId": "54154",
+      "variants": 1,
+      "share": 0.01
+    },
+    {
+      "name": "Tricare for Life",
+      "payerId": "TDDIR",
+      "variants": 1,
+      "share": 0.0
+    },
+    {
+      "name": "United Health Care",
+      "payerId": "EPRNT1060",
+      "variants": 1,
+      "share": 0.0
+    },
+    {
+      "name": "Personifyhealth Fka Healthcomp North",
+      "payerId": "36149",
+      "variants": 1,
+      "share": 0.0
+    },
+    {
+      "name": "Insurance TPA Aka International Funding",
+      "payerId": "39182",
+      "variants": 1,
+      "share": 0.0
+    },
+    {
+      "name": "CONSOCIATE GROUP",
+      "payerId": "37135",
+      "variants": 1,
+      "share": 0.0
+    },
+    {
+      "name": "Blue Medicare Advantage",
+      "payerId": "00772",
+      "variants": 1,
+      "share": 0.0
+    },
+    {
+      "name": "Dean Health Plans - Medica",
+      "payerId": "41822",
+      "variants": 1,
+      "share": 0.0
+    },
+    {
+      "name": "Liberty Healthshare",
+      "payerId": "90753",
+      "variants": 1,
+      "share": 0.0
+    },
+    {
+      "name": "Denver Health - Indigent",
+      "payerId": "84134",
+      "variants": 1,
+      "share": 0.0
+    },
+    {
+      "name": "FL BCBS",
+      "payerId": "SB590",
+      "variants": 1,
+      "share": 0.0
+    }
+  ]
+}

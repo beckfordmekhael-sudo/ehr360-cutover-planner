@@ -1,86 +1,155 @@
-import { useEffect, useState } from "react";
-import type { DispositionMap, DurationsConfig, PayerRow, Practice } from "./domain/types";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { Classification, DispositionMap, DurationsConfig, PayerRow, Practice } from "./domain/types";
 import { PRESETS } from "./domain/systems";
 import { DEFAULT_DURATIONS } from "./domain/durations";
+import { NEURO_HEART_PAYERS } from "./domain/library";
 import { addDays, iso, nextMonday, today } from "./engine/schedule";
+import { api } from "./api";
 
 /*
- * Persistence: localStorage, versioned keys. One record for the practice
- * portfolio, one for the duration settings. A schedule you cannot update is
- * a document, not a tool — everything the lead touches is saved per practice.
+ * Server-backed state. Progress tracking across weeks means a real backend,
+ * not localStorage (brief §8): every write goes to the API with a summary
+ * line for the audit trail, guarded by optimistic concurrency — a 409 means
+ * someone else saved first, and we reload rather than clobber.
  */
 
-const PRACTICES_KEY = "ehr360.planner.practices.v1";
-const SETTINGS_KEY = "ehr360.planner.durations.v1";
-
-function load<T>(key: string, fallback: T): T {
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return fallback;
-    return JSON.parse(raw) as T;
-  } catch {
-    return fallback;
-  }
-}
-
-function save<T>(key: string, value: T): void {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    /* storage full or unavailable — planner still works, just not persisted */
-  }
-}
-
-let idCounter = Date.now() % 100000;
 export function uid(prefix: string): string {
-  idCounter += 1;
-  return `${prefix}-${idCounter.toString(36)}`;
+  return `${prefix}-${crypto.randomUUID()}`;
 }
 
-export function newPractice(name: string): Practice {
-  // Default go-live: a Monday roughly 12 weeks out.
-  const target = nextMonday(addDays(today(), 84));
+export const DEFAULT_CLASSIFICATION: Classification = {
+  ehrReplaced: true,
+  contractsUnderTin: true,
+  rcmClient: false,
+  submitterChanges: true,
+};
+
+export function payerRowsFromSeed(): PayerRow[] {
+  return NEURO_HEART_PAYERS.map((p) => ({
+    id: uid("py"),
+    name: p.name,
+    payerId: p.payerId,
+    variants: p.variants,
+    remapped: p.variants <= 1,
+    share: p.share,
+    e837: { status: "none" as const },
+    e835: { status: "none" as const },
+    eft: { status: "none" as const },
+  }));
+}
+
+export function newPractice(name: string, globalDurations: DurationsConfig): Practice {
   return {
     id: uid("pr"),
     name,
-    goLive: iso(target),
+    goLive: iso(nextMonday(addDays(today(), 84))),
+    classification: { ...DEFAULT_CLASSIFICATION },
     dispositions: { ...PRESETS.full.map } as DispositionMap,
-    scale: { providers: 3, locations: 1, payers: 20, staff: 12 },
-    taskStatus: {},
+    scale: { providers: 3, locations: 1, payers: 20, prescribers: 3, staff: 12 },
+    progress: {},
     payers: [],
-    gateChecked: {},
+    gate: {},
+    eraDecision: { order: "", billingLead: "", rationale: "" },
+    // Pinned at creation — a plan does not silently move when an assumption
+    // changes. "Recalculate" copies the current globals explicitly.
+    assumptions: structuredClone(globalDurations),
     createdAt: iso(today()),
   };
 }
 
-export function defaultPayerRows(): PayerRow[] {
-  // Seed rows reflect the enrollment model: a small number of payers is most
-  // of the revenue. Names are placeholders for the lead to replace.
-  const cell = () => ({ status: "none" as const });
-  return [
-    { id: uid("py"), name: "Medicare", share: 32, e837: cell(), e835: cell(), eft: cell() },
-    { id: uid("py"), name: "BCBS", share: 24, e837: cell(), e835: cell(), eft: cell() },
-    { id: uid("py"), name: "Aetna", share: 14, e837: cell(), e835: cell(), eft: cell() },
-    { id: uid("py"), name: "UnitedHealthcare", share: 11, e837: cell(), e835: cell(), eft: cell() },
-    { id: uid("py"), name: "Medicaid", share: 8, e837: cell(), e835: cell(), eft: cell() },
-  ];
+/* ------------------------------ session ------------------------------ */
+
+export function useSession() {
+  const [user, setUser] = useState<{ id: string; name: string } | null | undefined>(undefined);
+  useEffect(() => {
+    api.me().then((r) => setUser(r.user)).catch(() => setUser(null));
+  }, []);
+  const login = useCallback(async (name: string, password: string) => {
+    const r = await api.login(name, password);
+    setUser(r.user);
+  }, []);
+  const register = useCallback(async (name: string, password: string) => {
+    const r = await api.register(name, password);
+    setUser(r.user);
+  }, []);
+  const logout = useCallback(async () => {
+    await api.logout();
+    setUser(null);
+  }, []);
+  return { user, login, register, logout };
 }
 
-export function usePractices() {
-  const [practices, setPractices] = useState<Practice[]>(() => {
-    const stored = load<Practice[]>(PRACTICES_KEY, []);
-    return stored.length ? stored : [{ ...newPractice("New practice"), payers: defaultPayerRows() }];
-  });
-  useEffect(() => save(PRACTICES_KEY, practices), [practices]);
-  return [practices, setPractices] as const;
+/* ----------------------------- practices ----------------------------- */
+
+export function usePractices(loggedIn: boolean) {
+  const [practices, setPractices] = useState<Practice[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  // Synchronous view of latest state: setState updaters run at render time,
+  // so the API write must not depend on them having executed.
+  const latest = useRef<Practice[]>(practices);
+  latest.current = practices;
+
+  const refresh = useCallback(async () => {
+    const r = await api.listPractices();
+    latest.current = r.practices;
+    setPractices(r.practices);
+    setLoaded(true);
+  }, []);
+
+  useEffect(() => {
+    if (!loggedIn) return;
+    refresh();
+    const onFocus = () => refresh().catch(() => {});
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [loggedIn, refresh]);
+
+  /** Optimistic update + audit summary; reloads on write conflict. */
+  const update = useCallback(
+    async (id: string, patch: Partial<Practice>, summary: string) => {
+      const cur = latest.current.find((p) => p.id === id);
+      if (!cur) return;
+      const next: Practice = { ...cur, ...patch };
+      latest.current = latest.current.map((p) => (p.id === id ? next : p));
+      setPractices(latest.current);
+      try {
+        const r = await api.updatePractice(next, summary, next.updatedAt);
+        latest.current = latest.current.map((p) => (p.id === id ? { ...p, updatedAt: r.updatedAt } : p));
+        setPractices(latest.current);
+      } catch (e) {
+        if ((e as { status?: number }).status === 409) await refresh();
+        else console.error(`Save failed (${summary}):`, e);
+      }
+    },
+    [refresh]
+  );
+
+  const create = useCallback(async (p: Practice) => {
+    await api.createPractice(p);
+    await refresh();
+  }, [refresh]);
+
+  const remove = useCallback(async (id: string) => {
+    await api.deletePractice(id);
+    setPractices((ps) => ps.filter((p) => p.id !== id));
+  }, []);
+
+  return { practices, loaded, refresh, update, create, remove };
 }
 
-export function useDurations() {
-  const [durations, setDurations] = useState<DurationsConfig>(() => {
-    const stored = load<DurationsConfig>(SETTINGS_KEY, DEFAULT_DURATIONS);
-    // Merge so new duration keys added in code appear for existing users.
-    return { ...DEFAULT_DURATIONS, ...stored };
-  });
-  useEffect(() => save(SETTINGS_KEY, durations), [durations]);
-  return [durations, setDurations] as const;
+/* ------------------------------ durations ----------------------------- */
+
+export function useGlobalDurations(loggedIn: boolean) {
+  const [durations, setDurations] = useState<DurationsConfig>(DEFAULT_DURATIONS);
+  useEffect(() => {
+    if (!loggedIn) return;
+    api.getDurations().then((r) => {
+      if (r.durations) setDurations({ ...DEFAULT_DURATIONS, ...r.durations });
+    }).catch(() => {});
+  }, [loggedIn]);
+  const save = useCallback(async (d: DurationsConfig) => {
+    setDurations(d);
+    await api.putDurations(d);
+  }, []);
+  return [durations, save] as const;
 }
